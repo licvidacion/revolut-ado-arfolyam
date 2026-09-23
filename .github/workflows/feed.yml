@@ -1,0 +1,69 @@
+# ============================================================================
+#  MNB arfolyam-feed — napi frissites, token nelkul
+#  ---------------------------------------------------------------------------
+#  Ez a repo NYILVANOS, es csak az MNB hivatalos arfolyamait tartalmazza.
+#  A revolut-ado app innen tolti le a friss tablat (web/arfolyamok.json).
+#
+#  Ket fuggetlen hivatalos MNB-forras, egymas ellenorzesekent:
+#    1. SOAP  http://www.mnb.hu/arfolyamok.asmx
+#    2. XLSX  https://www.mnb.hu/Root/ExchangeRate/arfolyam.xlsx
+#  Ha a ketto barmelyik kozos napon elter, a futas ELBUKIK es semmi nem
+#  kerul ki. Hibas arfolyammal soha nem irjuk felul a jot.
+# ============================================================================
+name: mnb-arfolyam-feed
+
+on:
+  schedule:
+    # Hetkoznap 15:30 UTC — az MNB delelott teszi kozze a napi arfolyamot.
+    - cron: '30 15 * * 1-5'
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  frissites:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: MNB SOAP letoltes (ellenorzo forras)
+        id: soap
+        continue-on-error: true
+        run: node eszkozok/arfolyam-letolt.js
+
+      - name: Kereszt-ellenorzes a HTTPS XLSX-szel
+        if: steps.soap.outcome == 'success'
+        run: node eszkozok/arfolyam-letolt-xlsx.js --ellenoriz
+
+      - name: MNB XLSX letoltes (ez kerul a feedbe)
+        run: node eszkozok/arfolyam-letolt-xlsx.js
+
+      - name: Tesztek
+        run: |
+          node eszkozok/teszt-arfolyam-xlsx.js
+          node eszkozok/teszt-arfolyam-frissito.js
+
+      - name: Commit, ha valtozott
+        run: |
+          git add web/arfolyamok.js web/arfolyamok.json
+          if git diff --cached --quiet; then
+            echo "Nincs valtozas."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          UTOLSO=$(node -e "var a=require('./web/arfolyamok.js');console.log(Object.keys(a.USD).sort().pop())")
+          git commit -m "MNB arfolyamtabla: $UTOLSO"
+          git push
+
+      # A frissesseg a VEGEN fut: egy lemaradas jelezzen (GitHub e-mail),
+      # de ne akadalyozza meg, hogy a meglevo friss adat kikeruljon.
+      - name: Frissesseg-ellenorzes
+        run: node eszkozok/frissesseg.js
